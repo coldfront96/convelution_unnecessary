@@ -146,6 +146,19 @@ class PluginRegistered(BaseEvent):
     plugin_description: str = ""
 
 
+@dataclass
+class ExternalPluginLoaded(BaseEvent):
+    plugin_name: str = ""
+    source_file: str = ""
+
+
+@dataclass
+class ExternalPluginReloaded(BaseEvent):
+    plugin_name: str = ""
+    source_file: str = ""
+    previous_version: str = ""
+
+
 # ---- event registry (maps type name -> class for deserialization) -----------
 
 
@@ -162,7 +175,8 @@ def _register_builtins() -> None:
     for cls in [
         TransformationStarted, TokensProduced, AstProduced, OptimizationApplied,
         BytecodeProduced, InstructionExecuted, PluginCalled,
-        TransformationCompleted, TransformationFailed, TypeCheckCompleted, PluginRegistered,
+        TransformationCompleted, TransformationFailed, TypeCheckCompleted,
+        PluginRegistered, ExternalPluginLoaded, ExternalPluginReloaded,
     ]:
         _EVENT_REGISTRY[cls.__name__] = cls
 

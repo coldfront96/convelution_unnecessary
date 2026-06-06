@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 from stratum.core.config import load_config
 from stratum.core.container import Container, Scope
@@ -23,6 +24,7 @@ from stratum.projections.stats import StatsProjection
 from stratum.api.cli import run_cli
 from stratum.api.http_server import create_http_server
 from stratum.query.executor import QueryExecutor
+from stratum.plugins.watcher import PluginDirectoryWatcher
 
 
 def _find_config() -> Path | None:
@@ -37,7 +39,7 @@ def _find_config() -> Path | None:
     return None
 
 
-def boot() -> tuple[Container, Orchestrator, PluginRegistry, HistoryProjection, StatsProjection]:
+def boot() -> tuple[Container, Orchestrator, PluginRegistry, HistoryProjection, StatsProjection, Any, EventBus]:
     """
     Bootstrap the entire system. Returns the container and key singletons.
     All wiring happens here; nothing else constructs its own dependencies.
@@ -86,13 +88,24 @@ def boot() -> tuple[Container, Orchestrator, PluginRegistry, HistoryProjection, 
     if all_events:
         history.rebuild_from_events(all_events)
 
-    return container, orchestrator, registry, history, stats, config
+    return container, orchestrator, registry, history, stats, config, event_bus
 
 
 def main() -> int:
-    container, orchestrator, registry, history, stats, config = boot()
+    container, orchestrator, registry, history, stats, config, event_bus = boot()
 
     query_executor = QueryExecutor(history)
+
+    # Start hot-reload watcher if extra_plugin_dirs are configured
+    watcher: PluginDirectoryWatcher | None = None
+    if config.plugins.extra_plugin_dirs:
+        from pathlib import Path
+        watcher = PluginDirectoryWatcher(
+            directories=[Path(d) for d in config.plugins.extra_plugin_dirs],
+            registry=registry,
+            event_bus=event_bus,
+        )
+        watcher.start()
 
     def http_server_factory():
         return create_http_server(
