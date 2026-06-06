@@ -9,6 +9,7 @@ Commands:
     python -m stratum history [--last N]      — show transformation history
     python -m stratum stats                   — show aggregate statistics
     python -m stratum query "<HQL>"           — query history with HQL
+    python -m stratum repl                    — start interactive REPL
     python -m stratum serve                   — start HTTP API server
 """
 
@@ -33,6 +34,7 @@ def run_cli(
     http_server_factory,
     config,
     query_executor=None,
+    session_path=None,
 ) -> int:
     """
     Entry point. Returns exit code.
@@ -81,6 +83,9 @@ def run_cli(
             executor = QueryExecutor(history_projection)
         return _cmd_query(executor, args[1])
 
+    if cmd == "repl":
+        return _cmd_repl(orchestrator, history_projection, session_path)
+
     # Default: transform
     if len(args) < 2:
         print("Usage: stratum <input_text> <program>", file=sys.stderr)
@@ -114,6 +119,17 @@ def _cmd_typecheck(orchestrator, program: str) -> int:
         return 0
     print(f"Error: {result.unwrap_err()}", file=sys.stderr)
     return 1
+
+
+def _cmd_repl(orchestrator, history_projection, session_path=None) -> int:
+    from stratum.repl.repl import Repl
+    repl = Repl(
+        orchestrator=orchestrator,
+        history_projection=history_projection,
+        session_path=session_path,
+    )
+    repl.run()
+    return 0
 
 
 def _cmd_query(query_executor, hql: str) -> int:
@@ -229,6 +245,7 @@ Usage:
   stratum history [--last N]         Show transformation history (default: 10)
   stratum stats                      Show aggregate statistics
   stratum query "<HQL>"              Query history with HQL
+  stratum repl                       Start interactive REPL
   stratum serve                      Start the HTTP API server
 
 STL Quick Reference:
