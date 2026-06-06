@@ -62,6 +62,12 @@ def run_cli(
             return 1
         return _cmd_disasm(orchestrator, args[1])
 
+    if cmd == "typecheck":
+        if len(args) < 2:
+            print("Usage: stratum typecheck <program>", file=sys.stderr)
+            return 1
+        return _cmd_typecheck(orchestrator, args[1])
+
     # Default: transform
     if len(args) < 2:
         print("Usage: stratum <input_text> <program>", file=sys.stderr)
@@ -81,6 +87,15 @@ def _cmd_transform(orchestrator, input_text: str, program: str) -> int:
 
 def _cmd_disasm(orchestrator, program: str) -> int:
     result = orchestrator.disassemble(program)
+    if result.is_ok():
+        print(result.unwrap())
+        return 0
+    print(f"Error: {result.unwrap_err()}", file=sys.stderr)
+    return 1
+
+
+def _cmd_typecheck(orchestrator, program: str) -> int:
+    result = orchestrator.typecheck(program)
     if result.is_ok():
         print(result.unwrap())
         return 0

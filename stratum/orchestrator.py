@@ -35,12 +35,14 @@ from stratum.core.events import (
     TransformationCompleted,
     TransformationFailed,
     TransformationStarted,
+    TypeCheckCompleted,
 )
 from stratum.core.result import Err, Ok, Result
 from stratum.lang.compiler import Compiler, CompileError
 from stratum.lang.lexer import Lexer, LexError
 from stratum.lang.optimizer import Optimizer
 from stratum.lang.parser import Parser, ParseError
+from stratum.lang.typechecker import TypeChecker
 from stratum.plugins.registry import PluginRegistry
 from stratum.vm.machine import VirtualMachine
 
@@ -70,6 +72,7 @@ class Orchestrator:
             max_iterations=config.optimizer.max_iterations,
             enabled=config.optimizer.enabled,
         )
+        self._type_checker = TypeChecker()
         self._compiler = Compiler(max_registers=config.vm.register_count)
         self._vm = VirtualMachine(
             plugin_registry=registry,
@@ -147,7 +150,24 @@ class Orchestrator:
                 self._store.append(opt_event)
                 self._bus.publish(opt_event)
 
-        # Step 5: compile
+        # Step 5: type-check (non-fatal: errors emit warnings, don't block execution)
+        tc_result = self._type_checker.check(optimized)
+        tc_event = TypeCheckCompleted(
+            session_id=session_id,
+            inferred_type=str(tc_result.inferred_type),
+            error_count=len(tc_result.errors),
+            warning_count=len(tc_result.warnings),
+        )
+        self._store.append(tc_event)
+        self._bus.publish(tc_event)
+        for diag in tc_result.diagnostics:
+            logger.log(
+                logging.WARNING if diag.is_warning() else logging.ERROR,
+                "type check: %s",
+                diag,
+            )
+
+        # Step 6: compile
         try:
             bytecode = self._compiler.compile(optimized, source=program_source)
         except CompileError as exc:
@@ -161,7 +181,7 @@ class Orchestrator:
         self._store.append(bc_event)
         self._bus.publish(bc_event)
 
-        # Step 6: execute
+        # Step 7: execute
         result = self._vm.execute(bytecode, input_text, session_id=session_id)
 
         duration_ms = (time.monotonic() - t_start) * 1000
@@ -171,7 +191,7 @@ class Orchestrator:
 
         output = result.unwrap()
 
-        # Step 7: announce completion
+        # Step 8: announce completion
         done_event = TransformationCompleted(
             session_id=session_id,
             input_text=input_text,
@@ -203,12 +223,27 @@ class Orchestrator:
         return Err(f"[{phase}] {message}")
 
     def disassemble(self, program_source: str) -> Result[str, str]:
-        """Lex, parse, optimize, compile, return disassembly without executing."""
+        """Lex, parse, optimize, type-check, compile, return annotated disassembly."""
         try:
             tokens = Lexer(program_source).tokenize()
             program = Parser(tokens).parse()
             optimized, _ = self._optimizer.optimize(program)
+            tc_result = self._type_checker.check(optimized)
             bytecode = self._compiler.compile(optimized, source=program_source)
-            return Ok(bytecode.disassemble())
+            header = f"; type: {tc_result.inferred_type}"
+            if tc_result.diagnostics:
+                header += "\n" + "\n".join(f"; {d}" for d in tc_result.diagnostics)
+            return Ok(header + "\n" + bytecode.disassemble())
         except (LexError, ParseError, CompileError) as exc:
+            return Err(str(exc))
+
+    def typecheck(self, program_source: str) -> Result[str, str]:
+        """Run only the type checker and return a human-readable report."""
+        try:
+            tokens = Lexer(program_source).tokenize()
+            program = Parser(tokens).parse()
+            optimized, _ = self._optimizer.optimize(program)
+            tc_result = self._type_checker.check(optimized)
+            return Ok(tc_result.summary())
+        except (LexError, ParseError) as exc:
             return Err(str(exc))

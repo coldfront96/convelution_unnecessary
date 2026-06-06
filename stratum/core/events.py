@@ -133,6 +133,14 @@ class TransformationFailed(BaseEvent):
 
 
 @dataclass
+class TypeCheckCompleted(BaseEvent):
+    session_id: str = ""
+    inferred_type: str = ""
+    error_count: int = 0
+    warning_count: int = 0
+
+
+@dataclass
 class PluginRegistered(BaseEvent):
     plugin_name: str = ""
     plugin_description: str = ""
@@ -154,7 +162,7 @@ def _register_builtins() -> None:
     for cls in [
         TransformationStarted, TokensProduced, AstProduced, OptimizationApplied,
         BytecodeProduced, InstructionExecuted, PluginCalled,
-        TransformationCompleted, TransformationFailed, PluginRegistered,
+        TransformationCompleted, TransformationFailed, TypeCheckCompleted, PluginRegistered,
     ]:
         _EVENT_REGISTRY[cls.__name__] = cls
 
