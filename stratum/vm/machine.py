@@ -26,7 +26,7 @@ from stratum.core.events import (
 )
 from stratum.core.result import Err, Ok, Result
 from stratum.vm.frame import Frame
-from stratum.vm.opcodes import Bytecode, Instruction, Opcode
+from stratum.vm.opcodes import Bytecode, Instruction, LambdaObject, Opcode
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,7 @@ class VirtualMachine:
         self._max_instructions = max_instructions
         self._emit_instr_events = emit_instruction_events
         self._state = VmState.IDLE
+        self._frame_stack: list[Frame] = []  # call stack for lambda invocations
         self._handlers: Dict[Opcode, Callable[[Instruction, Frame, str], None]] = self._build_dispatch_table()
 
     def _build_dispatch_table(self) -> Dict[Opcode, Callable[[Instruction, Frame, str], None]]:
@@ -84,6 +85,9 @@ class VirtualMachine:
             Opcode.JUMP:           self._op_jump,
             Opcode.HALT:           self._op_halt,
             Opcode.LABEL:          self._op_noop,
+            Opcode.MAP_CHARS:      self._op_map_chars,
+            Opcode.MAP_WORDS:      self._op_map_words,
+            Opcode.CALL_LAMBDA:    self._op_call_lambda,
         }
 
     # ---- execution entry point ----------------------------------------------
@@ -101,38 +105,12 @@ class VirtualMachine:
         frame = Frame(register_count=self._register_count)
         frame.store_register(0, input_text)  # R0 = input
         self._state = VmState.RUNNING
-        result_value = input_text
-
-        instructions_executed = 0
+        self._frame_stack = [frame]
 
         try:
-            while frame.ip < len(bytecode):
-                if instructions_executed >= self._max_instructions:
-                    raise ExecutionError(
-                        f"Instruction limit ({self._max_instructions}) exceeded. "
-                        "Your program may be infinitely looping."
-                    )
-
-                instr = bytecode[frame.ip]
-                frame.ip += 1
-
-                if self._emit_instr_events:
-                    self._emit_instr_event(instr, frame, session_id)
-
-                handler = self._handlers.get(instr.opcode)
-                if handler is None:
-                    raise ExecutionError(f"Unknown opcode: {instr.opcode}")
-
-                try:
-                    handler(instr, frame, session_id)
-                except _HaltSignal as halt:
-                    result_value = halt.value
-                    break
-
-                instructions_executed += 1
-
+            result = self._run_frame(bytecode, frame, session_id)
             self._state = VmState.HALTED
-            return Ok(result_value)
+            return result
 
         except ExecutionError as exc:
             self._state = VmState.FAULTED
@@ -152,6 +130,59 @@ class VirtualMachine:
 
         finally:
             self._state = VmState.IDLE
+            self._frame_stack = []
+
+    def _run_frame(
+        self, bytecode: Bytecode, frame: Frame, session_id: str
+    ) -> Result[str, str]:
+        """
+        Inner execution loop. Runs until HALT or end of instructions.
+        Raises ExecutionError on fatal errors; lambda invocations call this
+        recursively with a child frame pushed onto _frame_stack.
+        """
+        result_value = str(frame.load_register(0))
+        instructions_executed = 0
+
+        while frame.ip < len(bytecode):
+            if instructions_executed >= self._max_instructions:
+                raise ExecutionError(
+                    f"Instruction limit ({self._max_instructions}) exceeded."
+                )
+
+            instr = bytecode[frame.ip]
+            frame.ip += 1
+
+            if self._emit_instr_events:
+                self._emit_instr_event(instr, frame, session_id)
+
+            handler = self._handlers.get(instr.opcode)
+            if handler is None:
+                raise ExecutionError(f"Unknown opcode: {instr.opcode}")
+
+            try:
+                handler(instr, frame, session_id)
+            except _HaltSignal as halt:
+                return Ok(halt.value)
+
+            instructions_executed += 1
+
+        return Ok(result_value)
+
+    def _execute_lambda(
+        self, lambda_obj: LambdaObject, input_text: str, session_id: str
+    ) -> Result[str, str]:
+        """
+        Execute a LambdaObject in a fresh child Frame.
+        Pushes/pops the frame stack so _frame_stack reflects the full call chain.
+        """
+        child_frame = Frame(register_count=self._register_count)
+        child_frame.store_register(0, input_text)
+        child_frame.store_variable(lambda_obj.param, input_text)
+        self._frame_stack.append(child_frame)
+        try:
+            return self._run_frame(lambda_obj.bytecode, child_frame, session_id)
+        finally:
+            self._frame_stack.pop()
 
     # ---- opcode handlers ----------------------------------------------------
 
@@ -273,6 +304,63 @@ class VirtualMachine:
         result_reg = instr.operands[0]
         value = frame.load_register(result_reg)
         raise _HaltSignal(str(value))
+
+    def _op_map_chars(self, instr: Instruction, frame: Frame, session_id: str) -> None:
+        dest, input_reg, lambda_reg = instr.operands
+        input_text = str(frame.load_register(input_reg))
+        lambda_obj = frame.load_register(lambda_reg)
+
+        if not isinstance(lambda_obj, LambdaObject):
+            raise ExecutionError(
+                f"MAP_CHARS: expected a lambda in R{lambda_reg}, "
+                f"got {type(lambda_obj).__name__}"
+            )
+
+        parts: list[str] = []
+        for ch in input_text:
+            r = self._execute_lambda(lambda_obj, ch, session_id)
+            if r.is_err():
+                raise ExecutionError(f"Lambda error in map_chars: {r.unwrap_err()}")
+            parts.append(r.unwrap())
+
+        frame.store_register(dest, "".join(parts))
+
+    def _op_map_words(self, instr: Instruction, frame: Frame, session_id: str) -> None:
+        dest, input_reg, lambda_reg = instr.operands
+        input_text = str(frame.load_register(input_reg))
+        lambda_obj = frame.load_register(lambda_reg)
+
+        if not isinstance(lambda_obj, LambdaObject):
+            raise ExecutionError(
+                f"MAP_WORDS: expected a lambda in R{lambda_reg}, "
+                f"got {type(lambda_obj).__name__}"
+            )
+
+        words = input_text.split()
+        parts: list[str] = []
+        for word in words:
+            r = self._execute_lambda(lambda_obj, word, session_id)
+            if r.is_err():
+                raise ExecutionError(f"Lambda error in map_words: {r.unwrap_err()}")
+            parts.append(r.unwrap())
+
+        frame.store_register(dest, " ".join(parts))
+
+    def _op_call_lambda(self, instr: Instruction, frame: Frame, session_id: str) -> None:
+        dest, lambda_reg, input_reg = instr.operands
+        input_text = str(frame.load_register(input_reg))
+        lambda_obj = frame.load_register(lambda_reg)
+
+        if not isinstance(lambda_obj, LambdaObject):
+            raise ExecutionError(
+                f"CALL_LAMBDA: expected a lambda in R{lambda_reg}, "
+                f"got {type(lambda_obj).__name__}"
+            )
+
+        r = self._execute_lambda(lambda_obj, input_text, session_id)
+        if r.is_err():
+            raise ExecutionError(f"Lambda error: {r.unwrap_err()}")
+        frame.store_register(dest, r.unwrap())
 
     def _op_noop(self, instr: Instruction, frame: Frame, session_id: str) -> None:
         pass

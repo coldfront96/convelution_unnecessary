@@ -30,7 +30,7 @@ from stratum.lang.ast_nodes import (
     Program,
     StringLiteral,
 )
-from stratum.vm.opcodes import Bytecode, BytecodeBuilder, Opcode
+from stratum.vm.opcodes import Bytecode, BytecodeBuilder, LambdaObject, Opcode
 
 logger = logging.getLogger(__name__)
 
@@ -182,19 +182,83 @@ class Compiler(AstVisitor):
             return self._compile_conditional_with_input(stage, input_reg)
 
         if isinstance(stage, Lambda):
-            # Lambda in a pipeline applies the body per-character (simplified: treat as body)
-            return self._compile_stage(stage.body, input_reg)
+            # A bare lambda in a pipeline is applied to the input via CALL_LAMBDA
+            assert self._regs is not None and self._builder is not None
+            lambda_obj = self._compile_lambda_body(stage)
+            lambda_reg = self._regs.alloc()
+            self._builder.emit_load_const(lambda_reg, lambda_obj)
+            dest = self._regs.alloc()
+            self._builder.emit_call_lambda(dest, lambda_reg, input_reg)
+            return dest
 
         # Fallback: visit the node (might be a literal used as transform)
         return self.visit(stage)
 
     def _compile_call_with_input(self, node: Call, input_reg: int) -> int:
         assert self._regs is not None and self._builder is not None
+
+        # Special case: map / map_chars with a lambda argument → MAP_CHARS
+        if node.name in ("map", "map_chars") and node.args and isinstance(node.args[0], Lambda):
+            return self._compile_map(node.args[0], input_reg, mode="chars")
+
+        # Special case: map_words with a lambda argument → MAP_WORDS
+        if node.name == "map_words" and node.args and isinstance(node.args[0], Lambda):
+            return self._compile_map(node.args[0], input_reg, mode="words")
+
         dest = self._regs.alloc()
         arg_regs = [input_reg] + [self.visit(a) for a in node.args]
         kwarg_regs = {k: self.visit(v) for k, v in node.kwargs.items()}
         self._builder.emit_call_plugin(dest, node.name, arg_regs, kwarg_regs)
         return dest
+
+    def _compile_map(self, lambda_node: Lambda, input_reg: int, mode: str) -> int:
+        """Compile map(char => ...) or map_words(word => ...) into MAP_CHARS/MAP_WORDS."""
+        assert self._regs is not None and self._builder is not None
+        lambda_obj = self._compile_lambda_body(lambda_node)
+        lambda_reg = self._regs.alloc()
+        self._builder.emit_load_const(lambda_reg, lambda_obj)
+        dest = self._regs.alloc()
+        if mode == "chars":
+            self._builder.emit_map_chars(dest, input_reg, lambda_reg)
+        else:
+            self._builder.emit_map_words(dest, input_reg, lambda_reg)
+        return dest
+
+    def _compile_lambda_body(self, lambda_node: Lambda) -> LambdaObject:
+        """
+        Compile a Lambda AST node into a standalone LambdaObject.
+
+        The lambda body is compiled by a child Compiler that has:
+          - R0 = the lambda's input value
+          - The lambda parameter pre-bound as a variable at R0
+          - All macros from the parent scope inherited
+
+        The resulting Bytecode is wrapped in a LambdaObject and stored
+        as a LOAD_CONST value in the parent bytecode.
+        """
+        child = Compiler(max_registers=self._max_registers)
+        child._builder = BytecodeBuilder(source=f"λ{lambda_node.param}")
+        child._regs = RegisterAllocator(max_registers=self._max_registers)
+        child._symbols = SymbolTable()
+        child._label_counter = self._label_counter  # avoid label name collisions
+
+        # Inherit parent macros
+        for name, body in self._symbols.macros.items():
+            child._symbols.define_macro(name, body)
+
+        # R0 = input; bind the parameter name as a variable pointing at R0
+        child._regs.alloc()  # consume R0
+        child._symbols.define_variable(lambda_node.param)
+        child._builder.emit_store_var(lambda_node.param, 0)
+
+        # Compile body — result_reg holds the lambda's return value
+        result_reg = child.visit(lambda_node.body)
+        child._builder.emit_halt(result_reg)
+
+        # Propagate label counter back so parent labels stay unique
+        self._label_counter = child._label_counter
+
+        return LambdaObject(param=lambda_node.param, bytecode=child._builder.build())
 
     def _compile_macro_inline(self, name: str, input_reg: int) -> int:
         """Inline-expand a macro at the call site."""
@@ -304,11 +368,18 @@ class Compiler(AstVisitor):
         return value_reg
 
     def visit_lambda(self, node: Lambda) -> int:
-        # Simplified: compile lambda body as if param is the input register
+        """
+        A lambda that appears as a standalone expression (not inside map/map_words)
+        is compiled into a LambdaObject constant, then applied to the current input
+        via CALL_LAMBDA. This handles cases like: `char => upper(char)` as a program.
+        """
         assert self._regs is not None and self._builder is not None
-        self._symbols.define_variable(node.param)
-        self._builder.emit_store_var(node.param, self.INPUT_REGISTER)
-        return self._compile_stage(node.body, self.INPUT_REGISTER)
+        lambda_obj = self._compile_lambda_body(node)
+        lambda_reg = self._regs.alloc()
+        self._builder.emit_load_const(lambda_reg, lambda_obj)
+        dest = self._regs.alloc()
+        self._builder.emit_call_lambda(dest, lambda_reg, self.INPUT_REGISTER)
+        return dest
 
     def visit_pipeline(self, node: Pipeline) -> int:
         current_reg = self.INPUT_REGISTER

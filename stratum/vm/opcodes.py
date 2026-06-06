@@ -39,6 +39,14 @@ class Opcode(Enum):
     JUMP_IF_FALSE = auto() # (condition: int, offset: int)  — relative jump if register is falsy
     JUMP          = auto() # (offset: int,)                 — unconditional relative jump
 
+    # --- higher-order / lambda ---
+    MAP_CHARS   = auto()   # (dest: int, input_reg: int, lambda_reg: int)
+                           #   apply lambda to every character; rejoin
+    MAP_WORDS   = auto()   # (dest: int, input_reg: int, lambda_reg: int)
+                           #   apply lambda to every whitespace-delimited word; rejoin
+    CALL_LAMBDA = auto()   # (dest: int, lambda_reg: int, input_reg: int)
+                           #   apply lambda to the full value in input_reg
+
     # --- meta ---
     LABEL  = auto()        # (name: str,)                   — logical label, not a real instruction
     HALT   = auto()        # (result: int,)                 — stop; result register holds output
@@ -82,6 +90,9 @@ class Instruction:
                 parts.append(f"[{', '.join(f'R{r}' for r in op)}]")
             elif isinstance(op, dict):
                 parts.append("{" + ", ".join(f"{k}=R{v}" for k, v in op.items()) + "}")
+            elif hasattr(op, "param") and hasattr(op, "bytecode"):
+                # LambdaObject — show inline disassembly at a glance
+                parts.append(repr(op))
             else:
                 parts.append(repr(op))
         return "  ".join(parts)
@@ -133,6 +144,34 @@ class Bytecode:
             {"opcode": instr.opcode.name, "operands": list(instr.operands)}
             for instr in self.instructions
         ]
+
+
+# ---- lambda object ----------------------------------------------------------
+
+
+@dataclass
+class LambdaObject:
+    """
+    A first-class lambda value: the name of its single parameter and
+    a standalone Bytecode that implements its body.
+
+    Stored as a LOAD_CONST value; passed around in registers.
+    Executed by the VM in a fresh child Frame (multi-frame call stack).
+    """
+
+    param: str
+    bytecode: Bytecode
+
+    # Identity-based equality — two separately compiled lambdas are never equal
+    # even if they happen to do the same thing.
+    def __eq__(self, other: object) -> bool:
+        return self is other
+
+    def __hash__(self) -> int:
+        return id(self)
+
+    def __repr__(self) -> str:
+        return f"Lambda({self.param!r}, {len(self.bytecode)} instrs)"
 
 
 # ---- builder ----------------------------------------------------------------
@@ -206,6 +245,15 @@ class BytecodeBuilder:
 
     def emit_halt(self, result_reg: int) -> int:
         return self.emit(Opcode.HALT, result_reg)
+
+    def emit_map_chars(self, dest: int, input_reg: int, lambda_reg: int) -> int:
+        return self.emit(Opcode.MAP_CHARS, dest, input_reg, lambda_reg)
+
+    def emit_map_words(self, dest: int, input_reg: int, lambda_reg: int) -> int:
+        return self.emit(Opcode.MAP_WORDS, dest, input_reg, lambda_reg)
+
+    def emit_call_lambda(self, dest: int, lambda_reg: int, input_reg: int) -> int:
+        return self.emit(Opcode.CALL_LAMBDA, dest, lambda_reg, input_reg)
 
     def label(self, name: str) -> None:
         """Mark the current position with a label."""
