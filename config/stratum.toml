@@ -1,0 +1,30 @@
+# STRATUM configuration
+# All values shown are defaults; remove any section to accept the default.
+
+[vm]
+register_count = 16
+max_call_depth = 100
+max_instructions = 100000
+emit_instruction_events = false   # set true for very verbose event logging
+
+[optimizer]
+enabled = true
+passes = ["constant_fold", "dead_code", "peephole", "pipeline_merge"]
+max_iterations = 3
+
+[plugins]
+load_builtins = true
+extra_plugin_dirs = []
+
+[storage]
+db_path = "stratum.db"
+in_memory = false   # set true to avoid writing to disk
+
+[api]
+http_host = "127.0.0.1"
+http_port = 8742
+request_timeout_s = 30
+
+[logging]
+level = "INFO"
+format = "%(asctime)s %(levelname)s %(name)s: %(message)s"
