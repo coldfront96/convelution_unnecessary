@@ -4,6 +4,7 @@ HTTP API for STRATUM. Uses only stdlib http.server.
 Endpoints:
   POST /transform          { "input": "...", "program": "..." }
   POST /disasm             { "program": "..." }
+  POST /query              { "hql": "SELECT * WHERE ..." }
   GET  /plugins            list all plugins
   GET  /history?last=N     transformation history
   GET  /stats              aggregate statistics
@@ -47,6 +48,7 @@ class StratumRequestHandler(BaseHTTPRequestHandler):
     registry: Any = None
     history_projection: Any = None
     stats_projection: Any = None
+    query_executor: Any = None
 
     def log_message(self, format: str, *args: Any) -> None:
         logger.debug("HTTP %s %s %s", self.address_string(), self.command, self.path)
@@ -146,6 +148,27 @@ class StratumRequestHandler(BaseHTTPRequestHandler):
             else:
                 _json_response(self, 422, {"error": result.unwrap_err()})
 
+        elif path == "/query":
+            hql = body.get("hql", "")
+            if not hql:
+                _json_response(self, 400, {"error": "hql is required"})
+                return
+            from stratum.query.executor import QueryError
+            try:
+                qe = self.query_executor
+                if qe is None:
+                    from stratum.query.executor import QueryExecutor
+                    qe = QueryExecutor(self.history_projection)
+                qr = qe.execute(hql)
+                _json_response(self, 200, {
+                    "rows": qr.rows,
+                    "total_matched": qr.total_matched,
+                    "fields": qr.fields,
+                    "table": qr.to_table(),
+                })
+            except QueryError as exc:
+                _json_response(self, 422, {"error": str(exc)})
+
         else:
             _json_response(self, 404, {"error": f"Not found: {path}"})
 
@@ -157,6 +180,7 @@ def create_http_server(
     stats_projection: Any,
     host: str = "127.0.0.1",
     port: int = 8742,
+    query_executor: Any = None,
 ) -> HTTPServer:
     """Factory that creates a configured HTTPServer."""
 
@@ -169,6 +193,7 @@ def create_http_server(
             "registry": registry,
             "history_projection": history_projection,
             "stats_projection": stats_projection,
+            "query_executor": query_executor,
         },
     )
     server = HTTPServer((host, port), handler_class)

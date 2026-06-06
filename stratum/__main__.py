@@ -22,6 +22,7 @@ from stratum.projections.history import HistoryProjection
 from stratum.projections.stats import StatsProjection
 from stratum.api.cli import run_cli
 from stratum.api.http_server import create_http_server
+from stratum.query.executor import QueryExecutor
 
 
 def _find_config() -> Path | None:
@@ -91,6 +92,8 @@ def boot() -> tuple[Container, Orchestrator, PluginRegistry, HistoryProjection, 
 def main() -> int:
     container, orchestrator, registry, history, stats, config = boot()
 
+    query_executor = QueryExecutor(history)
+
     def http_server_factory():
         return create_http_server(
             orchestrator=orchestrator,
@@ -99,6 +102,7 @@ def main() -> int:
             stats_projection=stats,
             host=config.api.http_host,
             port=config.api.http_port,
+            query_executor=query_executor,
         )
 
     return run_cli(
@@ -109,6 +113,7 @@ def main() -> int:
         stats_projection=stats,
         http_server_factory=http_server_factory,
         config=config,
+        query_executor=query_executor,
     )
 
 

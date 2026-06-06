@@ -4,9 +4,11 @@ Command-line interface for STRATUM.
 Commands:
     python -m stratum <input> <program>       — run a transformation
     python -m stratum disasm <program>        — show bytecode disassembly
+    python -m stratum typecheck <program>     — run static type analysis
     python -m stratum plugins                 — list available plugins
     python -m stratum history [--last N]      — show transformation history
     python -m stratum stats                   — show aggregate statistics
+    python -m stratum query "<HQL>"           — query history with HQL
     python -m stratum serve                   — start HTTP API server
 """
 
@@ -30,6 +32,7 @@ def run_cli(
     stats_projection,
     http_server_factory,
     config,
+    query_executor=None,
 ) -> int:
     """
     Entry point. Returns exit code.
@@ -68,6 +71,16 @@ def run_cli(
             return 1
         return _cmd_typecheck(orchestrator, args[1])
 
+    if cmd == "query":
+        if len(args) < 2:
+            print('Usage: stratum query "<HQL>"', file=sys.stderr)
+            return 1
+        executor = query_executor
+        if executor is None:
+            from stratum.query.executor import QueryExecutor
+            executor = QueryExecutor(history_projection)
+        return _cmd_query(executor, args[1])
+
     # Default: transform
     if len(args) < 2:
         print("Usage: stratum <input_text> <program>", file=sys.stderr)
@@ -101,6 +114,17 @@ def _cmd_typecheck(orchestrator, program: str) -> int:
         return 0
     print(f"Error: {result.unwrap_err()}", file=sys.stderr)
     return 1
+
+
+def _cmd_query(query_executor, hql: str) -> int:
+    from stratum.query.executor import QueryError
+    try:
+        result = query_executor.execute(hql)
+        print(result.to_table())
+        return 0
+    except QueryError as exc:
+        print(f"HQL Error: {exc}", file=sys.stderr)
+        return 1
 
 
 def _cmd_plugins(registry, args: List[str]) -> int:
@@ -200,9 +224,11 @@ STRATUM — Unnecessarily Complex String Transformation Pipeline
 Usage:
   stratum <input> <program>          Transform input through a STL program
   stratum disasm <program>           Show bytecode disassembly
+  stratum typecheck <program>        Static type analysis of a STL program
   stratum plugins [--category CAT]   List all registered plugins
   stratum history [--last N]         Show transformation history (default: 10)
   stratum stats                      Show aggregate statistics
+  stratum query "<HQL>"              Query history with HQL
   stratum serve                      Start the HTTP API server
 
 STL Quick Reference:
