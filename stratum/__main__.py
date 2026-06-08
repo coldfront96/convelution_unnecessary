@@ -25,6 +25,8 @@ from stratum.api.cli import run_cli
 from stratum.api.http_server import create_http_server
 from stratum.query.executor import QueryExecutor
 from stratum.plugins.watcher import PluginDirectoryWatcher
+from stratum.plugins.chaos import ChaosPluginFactory
+from stratum.plugins.chaos.codec import configure_event_bus as configure_chaos_bus
 
 
 def _find_config() -> Path | None:
@@ -66,6 +68,15 @@ def boot() -> tuple[Container, Orchestrator, PluginRegistry, HistoryProjection, 
     registry = PluginRegistry(event_bus=event_bus, event_store=event_store)
     if config.plugins.load_builtins:
         registry.register_from_factory(BuiltinPluginFactory())
+
+    # Register chaos plugins and hook their event emitter to the bus
+    registry.register_from_factory(ChaosPluginFactory(
+        min_rounds=config.chaos.min_rounds,
+        max_rounds=config.chaos.max_rounds,
+        drift_rate=config.chaos.drift_rate,
+    ))
+    configure_chaos_bus(event_bus)
+
     container.register_instance(PluginRegistry, registry)
 
     # Wire projections (they self-subscribe to the bus in __init__)

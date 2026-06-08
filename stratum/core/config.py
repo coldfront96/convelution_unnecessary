@@ -71,6 +71,24 @@ class BoolNode(SchemaNode):
         return value, []
 
 
+class FloatNode(SchemaNode):
+    def __init__(self, min_val: Optional[float] = None, max_val: Optional[float] = None, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.min_val = min_val
+        self.max_val = max_val
+
+    def validate(self, value: Any, path: str) -> tuple[Any, list[str]]:
+        if not isinstance(value, (int, float)):
+            return value, [f"{path}: expected float, got {type(value).__name__}"]
+        value = float(value)
+        errors: list[str] = []
+        if self.min_val is not None and value < self.min_val:
+            errors.append(f"{path}: {value} < minimum {self.min_val}")
+        if self.max_val is not None and value > self.max_val:
+            errors.append(f"{path}: {value} > maximum {self.max_val}")
+        return value, errors
+
+
 class TableNode(SchemaNode):
     def __init__(self, children: Dict[str, SchemaNode], **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -177,6 +195,15 @@ _SCHEMA = TableNode(
             required=False,
             default={},
         ),
+        "chaos": TableNode(
+            children={
+                "min_rounds": IntNode(min_val=3, max_val=500, required=False, default=15),
+                "max_rounds": IntNode(min_val=5, max_val=500, required=False, default=50),
+                "drift_rate": FloatNode(min_val=0.0, max_val=1.0, required=False, default=0.15),
+            },
+            required=False,
+            default={},
+        ),
     }
 )
 
@@ -225,6 +252,13 @@ class LoggingConfig:
 
 
 @dataclass
+class ChaosConfig:
+    min_rounds: int = 15
+    max_rounds: int = 50
+    drift_rate: float = 0.15
+
+
+@dataclass
 class Config:
     vm: VmConfig = field(default_factory=VmConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
@@ -232,6 +266,7 @@ class Config:
     storage: StorageConfig = field(default_factory=StorageConfig)
     api: ApiConfig = field(default_factory=ApiConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    chaos: ChaosConfig = field(default_factory=ChaosConfig)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Config":
@@ -242,6 +277,7 @@ class Config:
             storage=StorageConfig(**data.get("storage", {})),
             api=ApiConfig(**data.get("api", {})),
             logging=LoggingConfig(**data.get("logging", {})),
+            chaos=ChaosConfig(**data.get("chaos", {})),
         )
 
     def effective_db_path(self) -> str:

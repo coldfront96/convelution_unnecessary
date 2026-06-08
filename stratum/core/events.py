@@ -147,6 +147,25 @@ class PluginRegistered(BaseEvent):
 
 
 @dataclass
+class ChaosEncoded(BaseEvent):
+    """Fired when text is chaos-encoded. Round count is intentionally omitted."""
+    text_length: int = 0
+
+
+@dataclass
+class ChaosDecodeAttempt(BaseEvent):
+    """Fired on each chaos_decode call. is_final only becomes True on the last round."""
+    is_final: bool = False
+
+
+@dataclass
+class ChaosFinalDecoded(BaseEvent):
+    """Fired when the final chaos layer is peeled and drift is applied."""
+    output_length: int = 0
+    drift_count: int = 0
+
+
+@dataclass
 class ExternalPluginLoaded(BaseEvent):
     plugin_name: str = ""
     source_file: str = ""
@@ -177,6 +196,7 @@ def _register_builtins() -> None:
         BytecodeProduced, InstructionExecuted, PluginCalled,
         TransformationCompleted, TransformationFailed, TypeCheckCompleted,
         PluginRegistered, ExternalPluginLoaded, ExternalPluginReloaded,
+        ChaosEncoded, ChaosDecodeAttempt, ChaosFinalDecoded,
     ]:
         _EVENT_REGISTRY[cls.__name__] = cls
 

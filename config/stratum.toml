@@ -28,3 +28,8 @@ request_timeout_s = 30
 [logging]
 level = "INFO"
 format = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
+[chaos]
+min_rounds = 15   # minimum scramble rounds (user never sees this)
+max_rounds = 50   # maximum scramble rounds (user never sees this either)
+drift_rate = 0.15 # fraction of chars that "drift" on final decode (0.0–1.0)
